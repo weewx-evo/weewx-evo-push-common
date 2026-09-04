@@ -547,8 +547,7 @@ def _options(protocol: Any, packaged: Any = ()) -> list:
     # The package may then declare the same names properly -- a label, a
     # sentence, `kind="secret"` for a token -- and that wins. A pair of names
     # and examples is enough to be configurable and not enough to be good.
-    named = {name: example for name, example in
-             getattr(protocol, "fetch_settings", ()) or ()}
+    named = dict(getattr(protocol, "fetch_settings", ()) or ())
     declared = list(getattr(protocol, "options", list)() or []) + list(packaged or ())
     for one in declared:
         named.pop(one.name, None)
