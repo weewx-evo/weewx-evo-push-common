@@ -44,11 +44,15 @@ class Sensor:
     def __init__(self, answer: bytes = b'{"SensorId": "aa:bb", "pm2_5_atm": 7.5}',
                  status: int = 200) -> None:
         self.answer, self.status, self.asked = answer, status, 0
+        #: Every path asked for, so a test can say what was requested and not
+        #: only that something was.
+        self.paths: list[str] = []
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # http.server's spelling, not ours
                 outer.asked += 1
+                outer.paths.append(self.path)
                 self.send_response(outer.status)
                 self.send_header("Content-Length", str(len(outer.answer)))
                 self.end_headers()
@@ -107,10 +111,20 @@ def it_asks_and_hands_over_what_it_got() -> None:
     print("\nasking a sensor that answers")
     sensor = Sensor()
     got: list[bytes] = []
-    poller = polling.Poller(Asked, [polling.Source(sensor.address, interval=10)])
+    # Through `sources_from`, not `Source(...)` directly, and that is not a
+    # detail: the protocol's `fetch_path` is appended there. Built by hand
+    # here, the source would carry a bare address, the test server would
+    # answer it anyway, and nothing would notice that `/json` had stopped
+    # being asked for.
+    sources = polling.sources_from(
+        {"addresses": [sensor.address], "interval": 10}, Asked)
+    check("the protocol's path is on the address", sources[0].url,
+          f"http://{sensor.address}/json")
+    poller = polling.Poller(Asked, sources)
     try:
         poller.start(lambda body: (got.append(body), 1)[1])
         check("it asked and delivered", waited_for(got), True)
+        check("and asked for the path", sensor.paths[:1], ["/json"])
         check("what the sensor said", json.loads(got[0])["pm2_5_atm"], 7.5)
         check("and it is recorded as having worked",
               "stored" in poller.last.get(sensor.address, ""), True)
@@ -190,9 +204,17 @@ def an_address_is_taken_as_typed() -> None:
         ("http://sensor.local", "http://sensor.local/json"),
         ("https://sensor.local/", "https://sensor.local/json"),
     ):
-        check(f"{typed!r}", polling.Source(typed).url("/json"), wanted)
+        check(f"{typed!r}", polling.full_url(typed, "/json"), wanted)
     check("and an empty one is empty rather than 'http://'",
-          polling.Source("  ").url("/json"), "")
+          polling.full_url("  ", "/json"), "")
+    # `url` is the finished address and an attribute, not a method. The
+    # protocols that assemble their own answer are byte-identical to
+    # weewx-ultimate-push and read it that way.
+    check("a source carries its finished address",
+          polling.Source("1.2.3.4", url="http://1.2.3.4/json").url,
+          "http://1.2.3.4/json")
+    check("and works one out when it is not given",
+          polling.Source("1.2.3.4").url, "http://1.2.3.4")
 
 
 def the_settings_become_sources() -> None:
@@ -252,14 +274,13 @@ def a_credential_never_reaches_the_address() -> None:
         Cloud)[0]
     check("the keys are on the source",
           cloud.query, {"applicationKey": "AAA", "apiKey": "BBB"})
-    check("and not in the address", "AAA" in cloud.url("/v1/devices"), False)
+    check("and not in the address", "AAA" in cloud.url, False)
 
     bearer = polling.sources_from(
         {"addresses": ["ha.local:8123"], "token": "secret"}, Bearer)[0]
     check("a header credential is a header",
           bearer.headers, {"Authorization": "Bearer secret"})
-    check("and not in the address either",
-          "secret" in bearer.url("/api/states"), False)
+    check("and not in the address either", "secret" in bearer.url, False)
 
     # And it is actually sent. Reading it back off a real request is the only
     # way to know: a key that is computed and then dropped looks identical.
@@ -283,9 +304,10 @@ def a_credential_never_reaches_the_address() -> None:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     where = f"127.0.0.1:{server.server_address[1]}"
     try:
-        source = polling.Source(where, headers={"Authorization": "Bearer x"},
+        source = polling.Source(where, url=polling.full_url(where, "/v1"),
+                                headers={"Authorization": "Bearer x"},
                                 query={"apiKey": "AAA"})
-        polling.ask(source, source.url("/v1"))
+        polling.ask(source, source.url)
         check("the query reached the far end", "apiKey=AAA" in seen["path"], True)
         check("so did the header", seen["auth"], "Bearer x")
     finally:

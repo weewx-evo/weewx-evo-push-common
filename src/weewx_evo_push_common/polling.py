@@ -61,12 +61,46 @@ TIMEOUT = 10.0
 FASTEST = 10
 
 
+def full_url(address: str, path: str = "") -> str:
+    """What somebody typed, as something `urlopen` will take.
+
+    A person types `192.168.1.50`, and once in a while
+    `http://192.168.1.50:8080`. Both have to work: making somebody write the
+    scheme is a support question that arrives once per user.
+    """
+    base = (address or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if "://" not in base:
+        base = f"http://{base}"
+    return base + (path or "")
+
+
 @dataclass
 class Source:
-    """One thing to ask, and what it needs to be asked with."""
+    """One thing to ask, and what it needs to be asked with.
+
+    **The attribute names are weew-ultimate-push's, not ours.** A protocol
+    that assembles its own answer out of several requests is handed one of
+    these, and those protocols are byte-identical to the copies over there --
+    they read `source.url`, `source.name`, `source.held`, `source.settings`,
+    `source.timeout` and `source.interval`. `url` in particular is the
+    finished address and not a method: `ecowitt_gateway.fetch` does
+    `address_of(source.url)`, and a method here would have been a fix that
+    could no longer travel between the two projects.
+    """
 
     #: What somebody typed in: a host, a host and port, or a whole URL.
     address: str
+    #: The finished address, path included. Set by `sources_from` from the
+    #: address and whatever the protocol appends.
+    url: str = ""
+    #: What to call it in a log line and on a page.
+    name: str = ""
+    #: A protocol's own scratchpad, kept between one question and the next.
+    #: Home Assistant remembers which entities are failing so that a hundred
+    #: of them do not each produce a log line every minute.
+    held: dict[str, Any] = field(default_factory=dict)
     #: Seconds between one answer and the next question.
     interval: int = 60
     #: Whatever the protocol asked for on top -- an API key, an account id.
@@ -83,19 +117,11 @@ class Source:
     #: on the address.
     query: dict[str, str] = field(default_factory=dict)
 
-    def url(self, path: str = "") -> str:
-        """The address as something `urlopen` will take.
-
-        A person types `192.168.1.50`, and once in a while
-        `http://192.168.1.50:8080`. Both have to work: making somebody write
-        the scheme is a support question that arrives once per user.
-        """
-        base = self.address.strip().rstrip("/")
-        if not base:
-            return ""
-        if "://" not in base:
-            base = f"http://{base}"
-        return base + (path or "")
+    def __post_init__(self) -> None:
+        if not self.url:
+            self.url = full_url(self.address)
+        if not self.name:
+            self.name = self.address
 
 
 def ask(source: Source, url: str, body: bytes | None = None
@@ -183,12 +209,11 @@ class Poller:
         fetch = getattr(self.protocol, "fetch", None)
         assembled = fetch(source, ask) if fetch is not None else None
         if assembled is None:
-            # The ordinary case: one request to the address, and the protocol
-            # says what to append. A protocol needing several -- an Ecowitt
-            # gateway, Home Assistant -- overrides `fetch` and hands back one
-            # body, so that nothing downstream has to know.
-            path = getattr(self.protocol, "fetch_path", "") or ""
-            body, _headers = ask(source, source.url(path))
+            # The ordinary case: one request to the address the protocol
+            # already appended its path to. A protocol needing several -- an
+            # Ecowitt gateway, Home Assistant -- overrides `fetch` and hands
+            # back one body, so nothing downstream has to know.
+            body, _headers = ask(source, source.url)
         else:
             body, _headers = assembled
 
@@ -257,7 +282,13 @@ def sources_from(settings: dict[str, Any],
             return {}
 
     headers, query = asked("headers_for"), asked("query_for")
-    return [Source(address=str(one), interval=interval, settings=dict(extra),
+    # The path is the protocol's, appended once here rather than at every
+    # question. A protocol that assembles its own answer ignores it and takes
+    # `source.url` apart itself, which is what `ecowitt_gateway` does with a
+    # host and a port.
+    path = getattr(protocol, "fetch_path", "") or ""
+    return [Source(address=str(one), url=full_url(str(one), path),
+                   interval=interval, settings=dict(extra),
                    headers=dict(headers), query=dict(query))
             for one in raw if str(one).strip()]
 
