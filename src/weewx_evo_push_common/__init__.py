@@ -56,8 +56,29 @@ seam.
 
 from __future__ import annotations
 
-from .driver import PushDriver, driver_class, driver_for
+from typing import Any
 
 __all__ = ["PushDriver", "driver_class", "driver_for"]
 
 VERSION = "0.1.0"
+
+#: The three names in `driver`, fetched on first use rather than on import.
+#:
+#: `driver.py` is the seam, so it imports weewx-evo. Nothing else here does:
+#: `polling` asks over HTTP, `transport` reads a body, `mapping` turns names
+#: into columns, and the protocols and catalogs import nothing at all. A
+#: plain `from .driver import ...` at the top of this file would make the
+#: core a requirement for reaching any of them -- so the tools that check a
+#: field table or a poller would need an installed weewx-evo to import a
+#: module that has never heard of it.
+#:
+#: The same rule the catalogs are held to, one level up.
+_SEAM = frozenset(__all__)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _SEAM:
+        from . import driver
+
+        return getattr(driver, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

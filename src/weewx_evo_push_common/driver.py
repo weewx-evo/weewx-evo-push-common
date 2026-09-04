@@ -46,7 +46,7 @@ from weewx_evo.db.live import Packet
 from weewx_evo.ingest import drivers
 from weewx_evo.ingest.drivers import Response
 
-from . import mapping, transport
+from . import mapping, polling, transport
 from . import protocols as protocol_defs
 
 log = logging.getLogger(__name__)
@@ -109,6 +109,7 @@ class PushDriver:
                  infer_unknown: str = mapping.SERIES,
                  max_behind: int | None = None, max_ahead: int | None = None,
                  stations: dict[str, dict] | None = None,
+                 addresses: Any = None, interval: Any = None,
                  **ignored: Any) -> None:
         # `field_map_extensions` keeps the name the ecowitt driver used, and
         # the running instance has two decisions written under it -- which
@@ -146,6 +147,16 @@ class PushDriver:
         #: driver's own `field_map_extensions`, where they had been put by
         #: hand before the page existed.
         self.stations = _by_identity(stations)
+        #: The sources this driver goes and asks, for a protocol that is
+        #: `fetched`. Empty for every protocol that is pushed at, which is
+        #: most of them, and then `start()` does nothing at all.
+        #:
+        #: `ignored` carries whatever else the protocol asked for in its own
+        #: `options()` -- an API key, an account id -- and it travels with
+        #: each source: this class must not learn what any of them mean.
+        self.sources = polling.sources_from({
+            "addresses": addresses, "interval": interval, **ignored})
+        self._poller: polling.Poller | None = None
         #: What could not be placed, for the settings page to show.
         self.unplaced: dict[str, Any] = {}
         #: What the device wants to read back. An attribute, because that is
@@ -337,12 +348,40 @@ class PushDriver:
         return transport.redact(raw)
 
     def status(self) -> dict[str, Any]:
-        return {
+        said = {
             "protocol": self.name,
             "hardware": self.protocol.hardware,
             "dialects": sorted({key[0] for key in self._readers}),
             "unplaced": sorted(self.unplaced),
         }
+        if self._poller is not None:
+            # How the last attempt at each source went. Not a history: a
+            # table of every attempt of every sensor is one nobody empties,
+            # and the question is whether it is answering now.
+            said["polling"] = dict(self._poller.last)
+        return said
+
+    # -- going and asking ------------------------------------------------
+
+    def start(self, deliver) -> None:
+        """Ask this protocol's sources, if it is one that has to be asked.
+
+        Nothing at all for a protocol that is pushed at, which is most of
+        them: no thread, no timer, no lookup. That case has to stay exactly
+        as cheap as it was.
+        """
+        if not getattr(self.protocol, "fetched", False) or not self.sources:
+            return
+        self._poller = polling.Poller(self.protocol, self.sources)
+        self._poller.start(deliver)
+        log.info("%s: asking %s every %ds", self.name,
+                 ", ".join(one.address for one in self.sources),
+                 self.sources[0].interval)
+
+    def close(self) -> None:
+        if self._poller is not None:
+            self._poller.stop()
+            self._poller = None
 
     # -- the parts of it -------------------------------------------------
 
@@ -446,7 +485,9 @@ def _clock(station: dict, name: str, fallback: float) -> float:
 
 
 def _options(protocol: Any) -> list:
-    """Nothing. A protocol has nothing to configure.
+    """Nothing, unless this protocol has to be asked.
+
+    ## A protocol that is pushed at has nothing to configure
 
     It had three: what to do with a field the catalog does not name, and how
     far a console's clock may be out in either direction. Six protocols
@@ -472,8 +513,45 @@ def _options(protocol: Any) -> list:
     So the six drivers have no page, and the sidebar has no six entries. A
     driver from outside the repository is unaffected: it declares whatever it
     likes and gets its own page, which is the point of the mechanism.
+
+    ## One that has to be asked has exactly two things
+
+    Where to ask, and how often. There is nowhere else these could come from:
+    a sensor with no field to type a server address into cannot announce
+    itself, so somebody has to say where it is.
+
+    `addresses` is a list because one household has two PurpleAir sensors as
+    readily as one. A driver instance per sensor would be the alternative,
+    and two instances of one protocol share a name -- which is half of what
+    `stations.by_identity` matches on, so the two sensors would be
+    indistinguishable.
+
+    Anything beyond these two is the protocol's own: an API key, an account
+    id, a station id. It declares them in `Protocol.options()` and they are
+    appended here, so this file never learns what any of them mean.
     """
-    return []
+    if not getattr(protocol, "fetched", False):
+        return []
+
+    from weewx_evo.options import Group, Option
+
+    own = list(getattr(protocol, "options", list)() or [])
+    return [Group("Where to ask", "This hardware answers whoever asks it, "
+                                  "and can be pointed at nothing.", (
+        Option("addresses", "Addresses", kind="list", default=(),
+               placeholder="192.168.1.50",
+               help="One per line. A host, a host and port, or a whole URL "
+                    "if it is not plain HTTP. Give the sensor a fixed "
+                    "address in your router: one whose address moves stops "
+                    "being read, and nothing about that looks like a "
+                    "network problem."),
+        Option("interval", "Ask every", kind="duration", default=60,
+               minimum=polling.FASTEST, maximum=3600,
+               help="Faster than the sensor measures buys nothing but "
+                    "duplicate readings. Most of them sample every ten "
+                    "seconds to a minute."),
+        *own,
+    ))]
 
 
 #: Notes that describe how the *upstream WeeWX extension* is configured, not
@@ -524,17 +602,18 @@ def _notes(protocol: Any) -> tuple[str, ...]:
     answer -- where this driver is reachable.
     """
     out = []
-    for note in protocol.notes:
+    for original in protocol.notes:
+        said = original
         for fragment, ours in SAID_HERE_INSTEAD.items():
-            if fragment in note:
+            if fragment in original:
                 # Replaced rather than `%`-formatted: our own text carries
                 # `%(address)s` too, and formatting it here would raise on
                 # the placeholder that is the page's to fill.
-                note = ours.replace(
+                said = ours.replace(
                     "%(udp)s", str(protocol.default_port or "the hub's port"))
                 break
-        if note not in out:
-            out.append(note)
+        if said not in out:
+            out.append(said)
     return tuple(out)
 
 
@@ -568,12 +647,14 @@ def _setup(protocol: Any) -> drivers.Setup:
     named = {one.strip().lower() for one in protocol.identity}
     secret = (protocol.secret or "").strip().lower()
     fields = []
-    for label, value in protocol.settings:
+    for label, given in protocol.settings:
         low = label.strip().lower()
         if low in named:
             value = "%(identity)s"
         elif secret and low == secret:
             value = "%(token)s"
+        else:
+            value = given
         fields.append((label, value))
 
     return drivers.Setup(

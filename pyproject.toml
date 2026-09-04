@@ -69,6 +69,15 @@ ignore = [
 # lines and does something else -- and in the core it sat under the same
 # exemption with a justification that said nothing about it.
 "src/weewx_evo_push_common/protocols/*" = ["UP031", "ISC004", "E501", "RUF012",
-                                           "PLR0912", "N801", "N802", "N806"]
+                                           "RUF023", "PLR0912", "S105",
+                                           "N801", "N802", "N806"]
 "src/weewx_evo_push_common/catalogs/*" = ["E501", "RUF012"]
+# The three beside them, on the same terms and for the same reason: they came
+# from weewx-ultimate-push and a fix should be able to travel either way.
+"src/weewx_evo_push_common/infer.py" = ["UP031", "ISC004", "E501", "RUF012",
+                                        "RUF023", "PLW1641", "PLW2901"]
+"src/weewx_evo_push_common/mapping.py" = ["UP031", "ISC004", "E501", "RUF012",
+                                          "PLW2901"]
+"src/weewx_evo_push_common/transport.py" = ["UP031", "ISC004", "E501",
+                                            "RUF012", "PLW2901", "FURB188"]
 "tools/*" = ["S101", "S105", "S106", "S108", "PLW0603"]
