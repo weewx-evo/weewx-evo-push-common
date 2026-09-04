@@ -1,0 +1,74 @@
+[project]
+name = "weewx-evo-push-common"
+version = "0.1.0"
+description = "Shared machinery for the weewx-evo push protocols. Not a driver."
+requires-python = ">=3.11"
+# Nothing. The parsing reads form-encoded bodies, query strings and JSON, all
+# of which are in the standard library, and the seam talks to weewx-evo,
+# which is installed because there is nothing to plug this into otherwise.
+dependencies = []
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+readme = "README.md"
+authors = [{name = "Manuel Hilgert"}]
+keywords = ["weewx", "weewx-evo", "weather-station"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+
+[project.urls]
+Homepage = "https://github.com/weewx-evo/weewx-evo-push-common"
+Issues = "https://github.com/weewx-evo/weewx-evo-push-common/issues"
+Core = "https://github.com/hilman2/weewx-evo"
+
+# No entry point, and that is the difference from every other package in the
+# organisation: this one registers nothing and answers on no endpoint.
+# Installing it alone changes nothing about weewx-evo. It is a dependency of
+# the protocol packages and is not listed in the plugin catalogue, because a
+# catalogue of things somebody can choose should not offer one that does
+# nothing on its own.
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The same rule set as the core, for the same reason: ruff's default set grows
+# between releases, and a check that changes underneath the repository blocks
+# a commit for a rule nobody chose.
+[tool.ruff]
+line-length = 100
+src = ["src", "tools"]
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "N", "UP", "B", "C4", "SIM", "ISC", "PIE",
+          "BLE", "S", "PLE", "PLW", "FURB", "RUF"]
+ignore = [
+    # A driver that raises must not take the listener down with it: the other
+    # protocols still have measurements arriving.
+    "BLE001",
+    # These say "write it differently", not "this is wrong".
+    "SIM102", "SIM105", "SIM108",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `protocols/` and `catalogs/` come from weewx-ultimate-push and are kept
+# byte-identical to it, so that a fix to a field placement is the same diff in
+# both projects. Reformatting them here would mean every such fix arriving as
+# a diff nobody can read.
+#
+# `driver.py` is deliberately not on this list. It is ours -- theirs is 1610
+# lines and does something else -- and in the core it sat under the same
+# exemption with a justification that said nothing about it.
+"src/weewx_evo_push_common/protocols/*" = ["UP031", "ISC004", "E501", "RUF012",
+                                           "PLR0912", "N801", "N802", "N806"]
+"src/weewx_evo_push_common/catalogs/*" = ["E501", "RUF012"]
+"tools/*" = ["S101", "S105", "S106", "S108", "PLW0603"]

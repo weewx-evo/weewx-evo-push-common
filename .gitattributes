@@ -1,0 +1,5 @@
+# LF in the repository and in the working tree. The parsers and catalogs are
+# kept byte-identical to weewx-ultimate-push so a field-placement fix is the
+# same diff in both projects; a checkout that turned them into CRLF would make
+# every such diff the whole file.
+* text=auto eol=lf
