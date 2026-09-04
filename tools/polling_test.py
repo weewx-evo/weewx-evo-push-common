@@ -221,8 +221,81 @@ def the_settings_become_sources() -> None:
     del poller
 
 
+def a_credential_never_reaches_the_address() -> None:
+    """Where an API key goes, and where it must not.
+
+    The URL is printed: a log line says which address could not be reached,
+    and the page of raw uploads says where a reading came from. A key in
+    either is a key in a support ticket.
+    """
+    print("\nan API key, and the address it is not in")
+
+    class Cloud:
+        name = "cloud"
+
+        @classmethod
+        def query_for(cls, settings: dict) -> dict:
+            # Ambient Weather wants both in the query string and offers no
+            # other way, which is why `query` exists beside `headers`.
+            return {"applicationKey": settings.get("app_key", ""),
+                    "apiKey": settings.get("api_key", "")}
+
+    class Bearer:
+        name = "bearer"
+
+        @classmethod
+        def headers_for(cls, settings: dict) -> dict:
+            return {"Authorization": "Bearer " + settings.get("token", "")}
+
+    cloud = polling.sources_from(
+        {"addresses": ["api.example.com"], "app_key": "AAA", "api_key": "BBB"},
+        Cloud)[0]
+    check("the keys are on the source",
+          cloud.query, {"applicationKey": "AAA", "apiKey": "BBB"})
+    check("and not in the address", "AAA" in cloud.url("/v1/devices"), False)
+
+    bearer = polling.sources_from(
+        {"addresses": ["ha.local:8123"], "token": "secret"}, Bearer)[0]
+    check("a header credential is a header",
+          bearer.headers, {"Authorization": "Bearer secret"})
+    check("and not in the address either",
+          "secret" in bearer.url("/api/states"), False)
+
+    # And it is actually sent. Reading it back off a real request is the only
+    # way to know: a key that is computed and then dropped looks identical.
+    sensor = Sensor()
+    seen: dict[str, str] = {}
+
+    class Recording(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # http.server's spelling, not ours
+            seen["path"] = self.path
+            seen["auth"] = self.headers.get("Authorization", "")
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    sensor.close()
+    server = http.server.HTTPServer(("127.0.0.1", 0), Recording)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    where = f"127.0.0.1:{server.server_address[1]}"
+    try:
+        source = polling.Source(where, headers={"Authorization": "Bearer x"},
+                                query={"apiKey": "AAA"})
+        polling.ask(source, source.url("/v1"))
+        check("the query reached the far end", "apiKey=AAA" in seen["path"], True)
+        check("so did the header", seen["auth"], "Bearer x")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def main() -> int:
     it_asks_and_hands_over_what_it_got()
+    a_credential_never_reaches_the_address()
     a_sensor_that_is_not_there_costs_only_itself()
     stopping_does_not_wait_out_the_interval()
     an_answer_of_nothing_is_not_delivered()

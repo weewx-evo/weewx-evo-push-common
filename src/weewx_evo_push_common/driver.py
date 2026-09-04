@@ -154,8 +154,9 @@ class PushDriver:
         #: `ignored` carries whatever else the protocol asked for in its own
         #: `options()` -- an API key, an account id -- and it travels with
         #: each source: this class must not learn what any of them mean.
-        self.sources = polling.sources_from({
-            "addresses": addresses, "interval": interval, **ignored})
+        self.sources = polling.sources_from(
+            {"addresses": addresses, "interval": interval, **ignored},
+            protocol)
         self._poller: polling.Poller | None = None
         #: What could not be placed, for the settings page to show.
         self.unplaced: dict[str, Any] = {}

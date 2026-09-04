@@ -44,6 +44,7 @@ import logging
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
@@ -71,7 +72,16 @@ class Source:
     #: Whatever the protocol asked for on top -- an API key, an account id.
     settings: dict[str, Any] = field(default_factory=dict)
     timeout: float = TIMEOUT
+    #: Where a credential goes, for a service that takes one in a header.
+    #: Kept off the URL on purpose: the URL is printed. A log line says which
+    #: address could not be reached and the page of raw uploads says where a
+    #: reading came from, and neither should carry somebody's API key.
     headers: dict[str, str] = field(default_factory=dict)
+    #: The same, for the services that will not take one in a header.
+    #: Ambient Weather wants its two keys in the query string and offers no
+    #: other way, so they are added at the moment of asking and never stored
+    #: on the address.
+    query: dict[str, str] = field(default_factory=dict)
 
     def url(self, path: str = "") -> str:
         """The address as something `urlopen` will take.
@@ -96,6 +106,11 @@ def ask(source: Source, url: str, body: bytes | None = None
     because for a sensor on a home network it usually means somebody unplugged
     it and it will be back.
     """
+    if source.query:
+        # Appended here rather than kept on the address, so that what a log
+        # line and the raw-upload page print is the address and not the key.
+        joiner = "&" if "?" in url else "?"
+        url = url + joiner + urllib.parse.urlencode(source.query)
     request = urllib.request.Request(  # noqa: S310 - the address is the operator's
         url, data=body, headers=dict(source.headers))
     with urllib.request.urlopen(request, timeout=source.timeout) as answer:  # noqa: S310
@@ -198,7 +213,8 @@ def _first(seen: set, key: tuple) -> bool:
     return True
 
 
-def sources_from(settings: dict[str, Any]) -> list[Source]:
+def sources_from(settings: dict[str, Any],
+                 protocol: Any = None) -> list[Source]:
     """The sources a driver was configured with.
 
     `addresses` is a list because one household has two PurpleAir sensors as
@@ -209,6 +225,11 @@ def sources_from(settings: dict[str, Any]) -> list[Source]:
     Anything else in the settings travels with each source: an API key or an
     account id belongs to the protocol, and a protocol that wants one asked
     for it in its own `options()`.
+
+    `protocol` is asked where its credential goes. A service that takes one
+    in a header says so with `headers_for`, one that will not with
+    `query_for`, and both are kept off the address for the reason given on
+    `Source.headers`.
     """
     raw = settings.get("addresses") or []
     if isinstance(raw, str):
@@ -220,7 +241,24 @@ def sources_from(settings: dict[str, Any]) -> list[Source]:
         interval = 60
     extra = {name: value for name, value in settings.items()
              if name not in ("addresses", "interval")}
-    return [Source(address=str(one), interval=interval, settings=dict(extra))
+
+    def asked(what: str) -> dict[str, str]:
+        found = getattr(protocol, what, None)
+        if found is None:
+            return {}
+        try:
+            return {str(k): str(v) for k, v in (found(extra) or {}).items()}
+        except Exception:
+            # A protocol that cannot work out its own credential from the
+            # settings has been misconfigured, and the address is still worth
+            # asking: some of them answer without one and say what is wrong.
+            log.exception("%s could not work out its %s",
+                          getattr(protocol, "name", "?"), what)
+            return {}
+
+    headers, query = asked("headers_for"), asked("query_for")
+    return [Source(address=str(one), interval=interval, settings=dict(extra),
+                   headers=dict(headers), query=dict(query))
             for one in raw if str(one).strip()]
 
 
