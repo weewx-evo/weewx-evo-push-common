@@ -485,7 +485,7 @@ def _clock(station: dict, name: str, fallback: float) -> float:
     return fallback if found is None else float(found)
 
 
-def _options(protocol: Any) -> list:
+def _options(protocol: Any, packaged: Any = ()) -> list:
     """Nothing, unless this protocol has to be asked.
 
     ## A protocol that is pushed at has nothing to configure
@@ -536,7 +536,25 @@ def _options(protocol: Any) -> list:
 
     from weewx_evo.options import Group, Option
 
-    own = list(getattr(protocol, "options", list)() or [])
+    # Three places a protocol's own fields can come from, in this order.
+    #
+    # `fetch_settings` is the parser's own list of (name, example) and is the
+    # one that must not be missed: it is what the parser actually reads out
+    # of the settings, so a protocol that names a field there and gets no box
+    # for it is one nobody can configure. Turned into plain text fields with
+    # the example as the placeholder.
+    #
+    # The package may then declare the same names properly -- a label, a
+    # sentence, `kind="secret"` for a token -- and that wins. A pair of names
+    # and examples is enough to be configurable and not enough to be good.
+    named = {name: example for name, example in
+             getattr(protocol, "fetch_settings", ()) or ()}
+    declared = list(getattr(protocol, "options", list)() or []) + list(packaged or ())
+    for one in declared:
+        named.pop(one.name, None)
+    own = [Option(name, name.replace("_", " ").capitalize(),
+                  placeholder=str(example))
+           for name, example in named.items()] + declared
     return [Group("Where to ask", "This hardware answers whoever asks it, "
                                   "and can be pointed at nothing.", (
         Option("addresses", "Addresses", kind="list", default=(),
@@ -668,7 +686,7 @@ def _setup(protocol: Any) -> drivers.Setup:
     )
 
 
-def driver_class(protocol: Any) -> type:
+def driver_class(protocol: Any, packaged: Any = ()) -> type:
     """A class per protocol, so each can be asked what it configures.
 
     `cli.all_schemas` asks `type(driver)` for its options, which is right --
@@ -681,7 +699,7 @@ def driver_class(protocol: Any) -> type:
     bound. Six lines of machinery to keep one line of the core unchanged.
     """
     def options() -> list:
-        return _options(protocol)
+        return _options(protocol, packaged)
 
     def setup() -> drivers.Setup:
         return _setup(protocol)
@@ -706,7 +724,8 @@ def driver_class(protocol: Any) -> type:
 
 
 def driver_for(protocol: Any,
-               precedence: int = protocol_defs.ORDINARY) -> type:
+               precedence: int = protocol_defs.ORDINARY,
+               options: Any = None) -> type:
     """Announce a protocol and hand back the class its package exports.
 
     The one line a protocol package needs. It was a `load(registry)` that
@@ -723,6 +742,17 @@ def driver_for(protocol: Any,
     because the parsers are byte-identical to weewx-ultimate-push and this
     number does not exist over there. Where a protocol comes in the order is
     a fact about the set that is installed, so it belongs to the packaging.
+
+    `options` is there for the same reason and is the more important of the
+    two. A cloud service needs an API key, and over there it is typed into a
+    `weewx.conf` section, so the parser has no `options()` and must not grow
+    one here. The package that carries it declares the fields instead, as
+    `options.Option` values, and the settings page renders them without this
+    file learning what any of them mean.
     """
     protocol_defs.register(protocol, precedence)
-    return driver_class(protocol)
+    # Passed into the factory rather than set on the class afterwards. The
+    # first version did the latter and the closure that reads them lives in
+    # `driver_class`, where the class does not exist yet: `options()` raised
+    # `NameError` for every protocol, polled or not.
+    return driver_class(protocol, options or ())

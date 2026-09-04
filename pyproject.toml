@@ -72,8 +72,20 @@ ignore = [
                                            "RUF023", "PLR0912", "S105",
                                            "N801", "N802", "N806"]
 "src/weewx_evo_push_common/catalogs/*" = ["E501", "RUF012"]
-# The three beside them, on the same terms and for the same reason: they came
-# from weewx-ultimate-push and a fix should be able to travel either way.
+# The three beside them, and *not* for the same reason. They started as
+# upstream's and are not any more -- 204 lines against 293, 245 against 323,
+# 201 against 300 -- because most of what upstream does there this program
+# does elsewhere. A fix cannot travel between them, and `cmp` says so.
+#
+# They are exempted because they were carried over from the core with these
+# findings already in them, and reformatting them now would be a diff that
+# changes nothing while making the one that follows it unreadable. Cleaning
+# them up is worth doing and is not this change.
+#
+# The gap that costs something: upstream's `transport.py` strips rtl_433's
+# syslog frame and ours does not. `-F syslog:host:port` is rtl_433's only UDP
+# output, so `weewx-evo-rtl433` steps over the frame in its own `_raw` rather
+# than parse returning an empty dict and the driver recording nothing.
 "src/weewx_evo_push_common/infer.py" = ["UP031", "ISC004", "E501", "RUF012",
                                         "RUF023", "PLW1641", "PLW2901"]
 "src/weewx_evo_push_common/mapping.py" = ["UP031", "ISC004", "E501", "RUF012",
